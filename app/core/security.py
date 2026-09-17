@@ -81,3 +81,24 @@ def validate_and_sanitize_sql(sql: str, dialect: str = "sqlite", max_rows: int =
 
     sanitized_sql = primary_stmt.sql(dialect=glot_dialect)
     return True, sanitized_sql, None
+
+def strip_explain_prefix(sql: str) -> str:
+    """
+    Strips leading EXPLAIN / EXPLAIN QUERY PLAN / EXPLAIN ANALYZE keywords from SQL query string.
+    """
+    cleaned = sql.strip().lstrip(";").strip()
+    # Case-insensitive removal of leading EXPLAIN forms
+    import re
+    cleaned = re.sub(r'^(EXPLAIN\s+(QUERY\s+PLAN\s+|ANALYZE\s+|FORMAT\s*=\s*\w+\s+|\([^\)]*\)\s+)?)+', '', cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+def validate_query_for_explain(sql: str, dialect: str = "sqlite") -> Tuple[bool, str, Optional[str]]:
+    """
+    Validates that the target query to be explained is strictly read-only and free of destructive AST operations.
+    Returns: (is_valid, sanitized_target_sql, error_message)
+    """
+    stripped_sql = strip_explain_prefix(sql)
+    if not stripped_sql:
+        return False, "", "No executable SELECT statement found in explain request."
+    return validate_and_sanitize_sql(stripped_sql, dialect=dialect, max_rows=1000)
+

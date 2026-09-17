@@ -67,3 +67,20 @@ class QueryResponse(BaseModel):
     error: Optional[str] = None
     self_healed: bool = False
     attempts: Optional[List[Dict[str, Any]]] = None
+
+class ExplainPlanRequest(BaseModel):
+    sql: str = Field(..., min_length=1, description="SQL query to explain")
+    db_url: Optional[str] = Field(None, description="Target database URL")
+
+class ExplainPlanResponse(BaseModel):
+    success: bool
+    dialect: str
+    plan_type: str
+    raw_plan: List[str] = Field(default_factory=list)
+    plan_rows: List[Dict[str, Any]] = Field(default_factory=list)
+    has_table_scan: bool = False
+    has_index_lookup: bool = False
+    execution_time_ms: float = 0.0
+    sql: str
+    error: Optional[str] = None
+

@@ -1,11 +1,18 @@
 from fastapi import APIRouter, HTTPException
-from app.api.schemas import NaturalLanguageQueryRequest, DirectSQLExecuteRequest, QueryResponse
+from app.api.schemas import (
+    NaturalLanguageQueryRequest, 
+    DirectSQLExecuteRequest, 
+    QueryResponse,
+    ExplainPlanRequest,
+    ExplainPlanResponse
+)
 from app.api.routes_database import get_current_db_url
 from app.engine.llm_client import LLMClient
 from app.engine.self_healer import TextToSQLEngine
 from app.engine.query_runner import QueryRunner
 
 router = APIRouter(prefix="/query", tags=["Query"])
+
 
 # In-memory query history for the session
 query_history = []
@@ -69,6 +76,13 @@ def execute_sql(req: DirectSQLExecuteRequest):
         }
     }
 
+@router.post("/explain-sql", response_model=ExplainPlanResponse)
+def explain_sql(req: ExplainPlanRequest):
+    target_url = get_current_db_url(req.db_url)
+    runner = QueryRunner(target_url)
+    return runner.explain_query(req.sql)
+
 @router.get("/history")
 def get_history():
     return {"history": query_history[:30]}
+
