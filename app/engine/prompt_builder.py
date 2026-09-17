@@ -46,6 +46,13 @@ CRITICAL RULES:
 {
   "sql": "SELECT ...",
   "explanation": "Plain English summary of the query logic and how it answers the prompt.",
+  "breakdown": {
+    "tables_used": ["table1", "table2"],
+    "joins": ["table1.id = table2.foreign_id"],
+    "filters": ["status = 'completed'"],
+    "aggregations": ["SUM(amount) grouped by category"],
+    "assumptions": ["Assumed completed orders represent realized revenue"]
+  },
   "suggested_chart": "bar|line|pie|table",
   "chart_config": {
     "x_axis": "column_name_for_labels",
@@ -54,7 +61,7 @@ CRITICAL RULES:
   }
 }
 8. GREETINGS & NON-DATABASE PROMPTS:
-If the user's input is a greeting (e.g. "hello", "hi", "hey", "how are you"), a conversational remark, or unrelated to querying the schema, set "sql" to empty string "", and in "explanation" provide a friendly response explaining what database tables exist and inviting them to ask a question (e.g. "Hello! I can help you analyze your database. Ask me a question about your customers, orders, or products.").
+If the user's input is a greeting (e.g. "hello", "hi", "hey", "how are you"), a conversational remark, or unrelated to querying the schema, set "sql" to empty string "", set "breakdown" to null, and in "explanation" provide a friendly response explaining what database tables exist and inviting them to ask a question (e.g. "Hello! I can help you analyze your database. Ask me a question about your customers, orders, or products.").
 Do not include markdown code fence formatting around the JSON (such as ```json ... ```) unless specifically required, but ensure raw JSON parsing succeeds.
 """
 
@@ -63,15 +70,31 @@ def build_sql_generation_prompt(
     schema_markdown: str,
     dialect: str = "sqlite",
     previous_error: Optional[str] = None,
-    previous_failed_sql: Optional[str] = None
+    previous_failed_sql: Optional[str] = None,
+    previous_sql: Optional[str] = None,
+    previous_prompt: Optional[str] = None
 ) -> str:
     dialect_guidance = DIALECT_TIPS.get(dialect.lower(), f"- Dialect: {dialect}\n- Ensure valid {dialect} syntax.")
     
     prompt_parts = [
         f"### Target Database Schema:\n{schema_markdown}",
         f"\n### Dialect Specific Rules:\n{dialect_guidance}",
-        f"\n### User Question:\n\"{user_query}\""
     ]
+
+    # Conversational follow-up context (Phase 2.1)
+    if previous_sql:
+        refinement_context = ["\n### Conversational Context & Prior Query:"]
+        if previous_prompt:
+            refinement_context.append(f"Previous User Request: \"{previous_prompt}\"")
+        refinement_context.append(f"Previous Generated SQL:\n```sql\n{previous_sql}\n```")
+        refinement_context.append(
+            "The current question is a conversational follow-up or refinement to the query above. "
+            "Update, adjust, filter, sort, or modify the previous SQL query according to the new request, "
+            "while maintaining relevant joins, filters, and projections unless the user asks to change or replace them."
+        )
+        prompt_parts.append("\n".join(refinement_context))
+
+    prompt_parts.append(f"\n### Current User Request:\n\"{user_query}\"")
 
     if previous_error and previous_failed_sql:
         prompt_parts.append(

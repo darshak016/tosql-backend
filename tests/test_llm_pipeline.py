@@ -48,3 +48,35 @@ def test_greeting_does_not_execute_sql(seeded_db_url):
     assert result["sql"] is None
     assert "Hello!" in result["explanation"]
     assert result["data"]["row_count"] == 0
+
+def test_conversational_follow_up(seeded_db_url):
+    client = LLMClient(api_key=None, provider="gemini")
+    engine = TextToSQLEngine(db_url=seeded_db_url, llm_client=client)
+
+    # Initial query
+    res1 = engine.process_natural_language_query("Show top 5 customers who spent the most")
+    assert res1["success"] is True
+    assert "LIMIT 5" in res1["sql"]
+
+    # Follow-up query: refine limit to 2
+    res2 = engine.process_natural_language_query(
+        user_prompt="Only show top 2 instead",
+        previous_sql=res1["sql"],
+        previous_prompt="Show top 5 customers who spent the most"
+    )
+    assert res2["success"] is True
+    assert "LIMIT 2" in res2["sql"]
+    assert res2["data"]["row_count"] == 2
+
+def test_structured_query_breakdown(seeded_db_url):
+    client = LLMClient(api_key=None, provider="gemini")
+    engine = TextToSQLEngine(db_url=seeded_db_url, llm_client=client)
+
+    result = engine.process_natural_language_query("Show top 5 customers who spent the most")
+    assert result["success"] is True
+    assert "breakdown" in result
+    breakdown = result["breakdown"]
+    assert isinstance(breakdown, dict)
+    assert "customers" in [t.lower() for t in breakdown.get("tables_used", [])]
+    assert len(breakdown.get("joins", [])) > 0
+    assert len(breakdown.get("aggregations", [])) > 0

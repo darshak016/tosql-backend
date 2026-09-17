@@ -11,6 +11,8 @@ class NaturalLanguageQueryRequest(BaseModel):
     api_key: Optional[str] = Field(None, description="Optional custom Gemini or OpenAI API key")
     provider: Optional[str] = Field("gemini", description="LLM provider: 'gemini' or 'openai'")
     model_name: Optional[str] = Field(None, description="Specific model name")
+    previous_sql: Optional[str] = Field(None, description="SQL from previous turn for conversational follow-ups")
+    previous_prompt: Optional[str] = Field(None, description="User prompt from previous turn")
 
 class DirectSQLExecuteRequest(BaseModel):
     sql: str = Field(..., min_length=1, description="Raw SQL query to execute safely")
@@ -46,11 +48,19 @@ class QueryResultData(BaseModel):
     row_count: int
     execution_time_ms: float
 
+class QueryBreakdown(BaseModel):
+    tables_used: List[str] = Field(default_factory=list, description="Tables referenced in the query")
+    joins: List[str] = Field(default_factory=list, description="Join conditions or relationships used")
+    filters: List[str] = Field(default_factory=list, description="WHERE filters applied")
+    aggregations: List[str] = Field(default_factory=list, description="Aggregations or group-bys used")
+    assumptions: List[str] = Field(default_factory=list, description="Assumptions or business logic caveats")
+
 class QueryResponse(BaseModel):
     success: bool
     prompt: Optional[str] = None
     sql: Optional[str] = None
     explanation: Optional[str] = None
+    breakdown: Optional[QueryBreakdown] = None
     suggested_chart: Optional[str] = "table"
     chart_config: Optional[Dict[str, Any]] = None
     data: QueryResultData

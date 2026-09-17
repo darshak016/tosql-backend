@@ -11,7 +11,7 @@ class LLMClient:
         self.api_key = api_key or (settings.GEMINI_API_KEY if self.provider == "gemini" else settings.OPENAI_API_KEY)
         self.model_name = model_name or (settings.DEFAULT_MODEL if self.provider == "gemini" else "gpt-4o-mini")
 
-    def generate_sql(self, prompt: str, user_query: str = "") -> Dict[str, Any]:
+    def generate_sql(self, prompt: str, user_query: str = "", previous_sql: Optional[str] = None) -> Dict[str, Any]:
         """
         Sends prompt to configured LLM (Gemini / OpenAI) or falls back to intelligent mock generator.
         """
@@ -38,7 +38,7 @@ class LLMClient:
             return self._call_openai(prompt)
 
         # Fallback to local intelligent mock engine for demo database
-        return self._fallback_demo_generator(user_query or prompt)
+        return self._fallback_demo_generator(user_query or prompt, prompt=prompt, previous_sql=previous_sql)
 
     def _call_gemini(self, prompt: str) -> Dict[str, Any]:
         try:
@@ -105,14 +105,17 @@ class LLMClient:
                 return json.loads(match.group(1))
             raise ValueError(f"Could not parse LLM output into JSON. Raw output: {raw_text[:200]}")
 
-    def _fallback_demo_generator(self, prompt: str) -> Dict[str, Any]:
+    def _fallback_demo_generator(self, user_query: str, prompt: str = "", previous_sql: Optional[str] = None) -> Dict[str, Any]:
         """
         Intelligent offline heuristic generator for bundled sample queries if no API key is set yet.
-        Enables testing and UI previewing out-of-the-box while properly handling greetings and non-queries!
+        Enables testing and UI previewing out-of-the-box while properly handling greetings, follow-ups, and non-queries!
         """
         # If full prompt was passed, extract the raw user question
-        user_query = prompt
-        if "### User Question:" in prompt:
+        if "### Current User Request:" in prompt:
+            match = re.search(r'### Current User Request:\s*"?(.*?)"?\s*(?:\n###|\nGenerate|$)', prompt, re.DOTALL)
+            if match:
+                user_query = match.group(1).strip()
+        elif "### User Question:" in prompt:
             match = re.search(r'### User Question:\s*"?(.*?)"?\s*(?:\n###|\nGenerate|$)', prompt, re.DOTALL)
             if match:
                 user_query = match.group(1).strip()
@@ -122,13 +125,13 @@ class LLMClient:
         clean_q = re.sub(r"[^\w\s]", " ", clean_q)
         clean_q = re.sub(r"\s+", " ", clean_q).strip()
 
-        # 1. Handle Greetings & Conversational Inputs
+        # 1. Handle Greetings & Conversational Inputs (only if not a follow-up refinement)
         greetings = {
             "hello", "hi", "hey", "hola", "greetings", "good morning", 
             "good afternoon", "good evening", "howdy", "sup", "yo",
             "how are you", "who are you", "what can you do", "help", "test"
         }
-        if clean_q in greetings or len(clean_q) <= 2:
+        if (clean_q in greetings or len(clean_q) <= 2) and not previous_sql:
             return {
                 "sql": "",
                 "explanation": "Hello! I am your AI Text-to-SQL Assistant. Ask me a question about your database (for example: 'Show top 5 customers by spend', 'Monthly revenue trend', or 'Which products are low on stock?').",
@@ -136,7 +139,51 @@ class LLMClient:
                 "chart_config": {}
             }
 
-        # 2. Check for Specific Analytical Query Intents
+        # 2. Conversational Follow-up Refinements (Phase 2.1)
+        if previous_sql:
+            mod_sql = previous_sql.strip().rstrip(';')
+
+            # Check for limit refinement (e.g. "top 10", "limit 3", "only 5")
+            limit_match = re.search(r'\b(?:top|limit|only|first)\s+(\d+)\b', clean_q)
+            if limit_match:
+                new_limit = limit_match.group(1)
+                if re.search(r'\bLIMIT\s+\d+\b', mod_sql, re.IGNORECASE):
+                    mod_sql = re.sub(r'\bLIMIT\s+\d+\b', f'LIMIT {new_limit}', mod_sql, flags=re.IGNORECASE)
+                else:
+                    mod_sql = f"{mod_sql}\nLIMIT {new_limit}"
+                return {
+                    "sql": mod_sql,
+                    "explanation": f"Refined the previous query to limit results to {new_limit} records based on your follow-up.",
+                    "suggested_chart": "table",
+                    "chart_config": {}
+                }
+
+            # Check for sorting direction (e.g. "order by asc", "lowest first", "descending")
+            if any(term in clean_q for term in ["ascending", "asc", "lowest first", "cheapest first"]):
+                if re.search(r'\bDESC\b', mod_sql, re.IGNORECASE):
+                    mod_sql = re.sub(r'\bDESC\b', 'ASC', mod_sql, flags=re.IGNORECASE)
+                    return {
+                        "sql": mod_sql,
+                        "explanation": "Updated sort order to ascending (lowest/cheapest first) according to your follow-up instruction.",
+                        "suggested_chart": "table",
+                        "chart_config": {}
+                    }
+
+            # Check for country/status filter additions
+            if "usa" in clean_q or "united states" in clean_q:
+                condition = "country = 'USA'" if "country" not in mod_sql else "c.country = 'USA'"
+                if "WHERE" in mod_sql.upper():
+                    mod_sql = re.sub(r'(\bWHERE\b\s+)(.*?)(\bGROUP\b|\bORDER\b|\bLIMIT\b|$)', rf'\1\2 AND {condition} \3', mod_sql, flags=re.IGNORECASE | re.DOTALL)
+                else:
+                    mod_sql = re.sub(r'(\bFROM\b.*?)(\bGROUP\b|\bORDER\b|\bLIMIT\b|$)', rf'\1 WHERE {condition} \2', mod_sql, flags=re.IGNORECASE | re.DOTALL)
+                return {
+                    "sql": mod_sql.strip(),
+                    "explanation": "Refined previous query to only include customers/records from the USA.",
+                    "suggested_chart": "table",
+                    "chart_config": {}
+                }
+
+        # 3. Check for Specific Analytical Query Intents
         is_postgres = ("postgresql" in prompt.lower()) or ("first_name" in prompt)
 
         if any(term in clean_q for term in ["campaign", "marketing", "ad spend", "roi"]):
@@ -283,7 +330,7 @@ ORDER BY month ASC""",
 
         elif any(term in clean_q for term in ["low on stock", "low stock", "running low", "critical stock", "inventory"]):
             return {
-                "sql": """SELECT id, name, sku, price, stock_quantity, reorder_level
+                "sql": """SELECT id, name, category, price, stock_quantity, rating
 FROM products
 WHERE stock_quantity < 50
 ORDER BY stock_quantity ASC

@@ -25,7 +25,9 @@ def generate_and_run(req: NaturalLanguageQueryRequest):
     try:
         result = engine.process_natural_language_query(
             user_prompt=req.prompt,
-            max_self_heal_retries=2
+            max_self_heal_retries=2,
+            previous_sql=req.previous_sql,
+            previous_prompt=req.previous_prompt
         )
         
         # Save to history
