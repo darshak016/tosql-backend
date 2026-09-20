@@ -1,6 +1,7 @@
 import os
 from fastapi import APIRouter, HTTPException
-from app.api.schemas import ConnectRequest, DatabaseSchemaResponse
+from app.api.schemas import ConnectRequest, DatabaseSchemaResponse, DictionaryConfig
+
 from app.engine.introspector import DatabaseIntrospector
 from app.samples.seed_samples import seed_ecommerce_db
 from app.core.config import settings
@@ -119,3 +120,58 @@ def get_sample_queries():
             }
         ]
     }
+
+# Default bundled glossary terms and few-shot examples for sample ecommerce DB
+_sample_dictionary = {
+    "terms": [
+        {
+            "term": "active customer",
+            "definition": "c.id IN (SELECT DISTINCT customer_id FROM orders WHERE order_date >= date('now', '-90 days'))",
+            "category": "Customer Status"
+        },
+        {
+            "term": "high value order",
+            "definition": "o.total_amount >= 150.00 AND o.status = 'completed'",
+            "category": "Revenue"
+        },
+        {
+            "term": "low stock",
+            "definition": "p.stock_quantity < 50",
+            "category": "Inventory"
+        },
+        {
+            "term": "realized revenue",
+            "definition": "SUM(o.total_amount) WHERE o.status = 'completed'",
+            "category": "Accounting"
+        }
+    ],
+    "few_shots": [
+        {
+            "prompt": "Show top 5 customers by spend",
+            "sql": "SELECT c.name, ROUND(SUM(o.total_amount), 2) AS total_spent FROM customers c JOIN orders o ON c.id = o.customer_id WHERE o.status = 'completed' GROUP BY c.id, c.name ORDER BY total_spent DESC LIMIT 5",
+            "explanation": "Calculates completed order spending per customer and orders descending with a limit of 5."
+        },
+        {
+            "prompt": "Monthly sales trend",
+            "sql": "SELECT strftime('%Y-%m', order_date) AS month, ROUND(SUM(total_amount), 2) AS monthly_revenue, COUNT(id) AS order_count FROM orders WHERE status = 'completed' GROUP BY strftime('%Y-%m', order_date) ORDER BY month ASC",
+            "explanation": "Aggregates revenue and volume per month for completed orders formatted YYYY-MM."
+        }
+    ]
+}
+
+@router.get("/dictionary", response_model=DictionaryConfig)
+def get_dictionary():
+    """
+    Returns the active dictionary containing domain glossary definitions and few-shot reference examples.
+    """
+    return _sample_dictionary
+
+@router.post("/dictionary", response_model=DictionaryConfig)
+def update_dictionary(config: DictionaryConfig):
+    """
+    Updates the active domain glossary definitions and few-shot examples.
+    """
+    _sample_dictionary["terms"] = [t.model_dump() for t in config.terms]
+    _sample_dictionary["few_shots"] = [f.model_dump() for f in config.few_shots]
+    return _sample_dictionary
+

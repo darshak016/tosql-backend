@@ -22,12 +22,14 @@ class TextToSQLEngine:
         user_prompt: str,
         max_self_heal_retries: int = 2,
         previous_sql: Optional[str] = None,
-        previous_prompt: Optional[str] = None
+        previous_prompt: Optional[str] = None,
+        glossary_terms: Optional[list] = None,
+        few_shot_examples: Optional[list] = None
     ) -> Dict[str, Any]:
         """
         Orchestrates:
         1. Introspection & schema markdown context
-        2. Prompt generation (with conversational context if refining previous query)
+        2. Prompt generation (with conversational context, glossary definitions, and few-shots)
         3. LLM SQL generation
         4. Validation & execution
         5. Autonomous self-healing reflection loop on execution error
@@ -66,17 +68,22 @@ class TextToSQLEngine:
                 previous_error=last_error,
                 previous_failed_sql=last_failed_sql,
                 previous_sql=previous_sql,
-                previous_prompt=previous_prompt
+                previous_prompt=previous_prompt,
+                glossary_terms=glossary_terms,
+                few_shot_examples=few_shot_examples
             )
 
             # Generate via LLM
             ai_output = self.llm_client.generate_sql(
                 prompt,
                 user_query=user_prompt,
-                previous_sql=previous_sql
+                previous_sql=previous_sql,
+                glossary_terms=glossary_terms,
+                few_shot_examples=few_shot_examples
             )
             current_ai_result = ai_output
             generated_sql = (ai_output.get("sql") or "").strip()
+
 
             # If user sent a greeting or conversational prompt (no SQL needed)
             if not generated_sql:

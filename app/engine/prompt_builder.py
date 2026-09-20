@@ -72,7 +72,9 @@ def build_sql_generation_prompt(
     previous_error: Optional[str] = None,
     previous_failed_sql: Optional[str] = None,
     previous_sql: Optional[str] = None,
-    previous_prompt: Optional[str] = None
+    previous_prompt: Optional[str] = None,
+    glossary_terms: Optional[list] = None,
+    few_shot_examples: Optional[list] = None
 ) -> str:
     dialect_guidance = DIALECT_TIPS.get(dialect.lower(), f"- Dialect: {dialect}\n- Ensure valid {dialect} syntax.")
     
@@ -80,6 +82,50 @@ def build_sql_generation_prompt(
         f"### Target Database Schema:\n{schema_markdown}",
         f"\n### Dialect Specific Rules:\n{dialect_guidance}",
     ]
+
+    # Domain Glossary & Semantic Business Rules (Plan 1.4 / A.4)
+    if glossary_terms and len(glossary_terms) > 0:
+        glossary_lines = [
+            "\n### Domain Glossary & Business Logic Rules:",
+            "Use the following authoritative domain definitions whenever the user prompt mentions these terms or concepts:"
+        ]
+        for item in glossary_terms:
+            if isinstance(item, dict):
+                term = item.get("term", "").strip()
+                defn = item.get("definition", "").strip()
+                cat = item.get("category")
+            else:
+                term = getattr(item, "term", "").strip()
+                defn = getattr(item, "definition", "").strip()
+                cat = getattr(item, "category", None)
+            if term and defn:
+                cat_tag = f" [{cat}]" if cat else ""
+                glossary_lines.append(f"- \"{term}\"{cat_tag}: {defn}")
+        if len(glossary_lines) > 2:
+            prompt_parts.append("\n".join(glossary_lines))
+
+    # Few-Shot Reference Examples (Plan 1.4 / A.4)
+    if few_shot_examples and len(few_shot_examples) > 0:
+        few_shot_lines = [
+            "\n### Reference Example Queries (Few-Shot):",
+            "Refer to these golden examples of user questions and approved SQL queries for this database:"
+        ]
+        for idx, ex in enumerate(few_shot_examples, 1):
+            if isinstance(ex, dict):
+                ex_prompt = ex.get("prompt", "").strip()
+                ex_sql = ex.get("sql", "").strip()
+                ex_expl = ex.get("explanation")
+            else:
+                ex_prompt = getattr(ex, "prompt", "").strip()
+                ex_sql = getattr(ex, "sql", "").strip()
+                ex_expl = getattr(ex, "explanation", None)
+            if ex_prompt and ex_sql:
+                expl_str = f" -- {ex_expl}" if ex_expl else ""
+                few_shot_lines.append(f"Example {idx}:")
+                few_shot_lines.append(f"Q: \"{ex_prompt}\"{expl_str}")
+                few_shot_lines.append(f"SQL:\n```sql\n{ex_sql}\n```\n")
+        if len(few_shot_lines) > 2:
+            prompt_parts.append("\n".join(few_shot_lines))
 
     # Conversational follow-up context (Phase 2.1)
     if previous_sql:
@@ -108,3 +154,4 @@ def build_sql_generation_prompt(
 
     prompt_parts.append("\nGenerate the JSON response containing the SQL query, explanation, and visualization recommendation:")
     return "\n".join(prompt_parts)
+

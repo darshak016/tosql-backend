@@ -34,8 +34,11 @@ def generate_and_run(req: NaturalLanguageQueryRequest):
             user_prompt=req.prompt,
             max_self_heal_retries=2,
             previous_sql=req.previous_sql,
-            previous_prompt=req.previous_prompt
+            previous_prompt=req.previous_prompt,
+            glossary_terms=req.glossary_terms,
+            few_shot_examples=req.few_shot_examples
         )
+
         
         # Save to history
         query_history.insert(0, {

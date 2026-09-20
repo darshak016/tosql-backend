@@ -11,7 +11,14 @@ class LLMClient:
         self.api_key = api_key or (settings.GEMINI_API_KEY if self.provider == "gemini" else settings.OPENAI_API_KEY)
         self.model_name = model_name or (settings.DEFAULT_MODEL if self.provider == "gemini" else "gpt-4o-mini")
 
-    def generate_sql(self, prompt: str, user_query: str = "", previous_sql: Optional[str] = None) -> Dict[str, Any]:
+    def generate_sql(
+        self, 
+        prompt: str, 
+        user_query: str = "", 
+        previous_sql: Optional[str] = None,
+        glossary_terms: Optional[list] = None,
+        few_shot_examples: Optional[list] = None
+    ) -> Dict[str, Any]:
         """
         Sends prompt to configured LLM (Gemini / OpenAI) or falls back to intelligent mock generator.
         """
@@ -38,7 +45,14 @@ class LLMClient:
             return self._call_openai(prompt)
 
         # Fallback to local intelligent mock engine for demo database
-        return self._fallback_demo_generator(user_query or prompt, prompt=prompt, previous_sql=previous_sql)
+        return self._fallback_demo_generator(
+            user_query or prompt, 
+            prompt=prompt, 
+            previous_sql=previous_sql,
+            glossary_terms=glossary_terms,
+            few_shot_examples=few_shot_examples
+        )
+
 
     def _call_gemini(self, prompt: str) -> Dict[str, Any]:
         try:
@@ -105,10 +119,17 @@ class LLMClient:
                 return json.loads(match.group(1))
             raise ValueError(f"Could not parse LLM output into JSON. Raw output: {raw_text[:200]}")
 
-    def _fallback_demo_generator(self, user_query: str, prompt: str = "", previous_sql: Optional[str] = None) -> Dict[str, Any]:
+    def _fallback_demo_generator(
+        self, 
+        user_query: str, 
+        prompt: str = "", 
+        previous_sql: Optional[str] = None,
+        glossary_terms: Optional[list] = None,
+        few_shot_examples: Optional[list] = None
+    ) -> Dict[str, Any]:
         """
         Intelligent offline heuristic generator for bundled sample queries if no API key is set yet.
-        Enables testing and UI previewing out-of-the-box while properly handling greetings, follow-ups, and non-queries!
+        Enables testing and UI previewing out-of-the-box while properly handling greetings, follow-ups, few-shots, and glossary rules!
         """
         # If full prompt was passed, extract the raw user question
         if "### Current User Request:" in prompt:
@@ -125,6 +146,21 @@ class LLMClient:
         clean_q = re.sub(r"[^\w\s]", " ", clean_q)
         clean_q = re.sub(r"\s+", " ", clean_q).strip()
 
+        # 0. Check custom few-shot examples registered by user/admin
+        if few_shot_examples:
+            for ex in few_shot_examples:
+                ex_prompt = (ex.get("prompt") if isinstance(ex, dict) else getattr(ex, "prompt", "")) or ""
+                clean_ex = re.sub(r"[^\w\s]", " ", ex_prompt.lower()).strip()
+                if clean_ex and (clean_ex == clean_q or clean_ex in clean_q or clean_q in clean_ex):
+                    ex_sql = (ex.get("sql") if isinstance(ex, dict) else getattr(ex, "sql", "")) or ""
+                    ex_expl = (ex.get("explanation") if isinstance(ex, dict) else getattr(ex, "explanation", "")) or "Generated from matching registered few-shot reference example."
+                    return {
+                        "sql": ex_sql,
+                        "explanation": ex_expl,
+                        "suggested_chart": "table",
+                        "chart_config": {}
+                    }
+
         # 1. Handle Greetings & Conversational Inputs (only if not a follow-up refinement)
         greetings = {
             "hello", "hi", "hey", "hola", "greetings", "good morning", 
@@ -138,6 +174,7 @@ class LLMClient:
                 "suggested_chart": "table",
                 "chart_config": {}
             }
+
 
         # 2. Conversational Follow-up Refinements (Phase 2.1)
         if previous_sql:

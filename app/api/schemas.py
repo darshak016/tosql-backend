@@ -5,6 +5,20 @@ class ConnectRequest(BaseModel):
     db_url: Optional[str] = Field(None, description="SQLAlchemy connection URL (sqlite, postgresql, mysql)")
     use_sample_db: bool = Field(True, description="Connect to bundled sample ecommerce SQLite DB")
 
+class GlossaryTerm(BaseModel):
+    term: str = Field(..., min_length=1, description="Domain specific business term or alias")
+    definition: str = Field(..., min_length=1, description="Exact SQL filter expression, formula, or meaning")
+    category: Optional[str] = Field(None, description="Optional category tag e.g. 'Revenue', 'Status'")
+
+class FewShotExample(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Natural language question")
+    sql: str = Field(..., min_length=1, description="Target golden SQL statement answering the question")
+    explanation: Optional[str] = Field(None, description="Optional explanation or intent note")
+
+class DictionaryConfig(BaseModel):
+    terms: List[GlossaryTerm] = Field(default_factory=list)
+    few_shots: List[FewShotExample] = Field(default_factory=list)
+
 class NaturalLanguageQueryRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language question")
     db_url: Optional[str] = Field(None, description="Target database URL")
@@ -13,10 +27,13 @@ class NaturalLanguageQueryRequest(BaseModel):
     model_name: Optional[str] = Field(None, description="Specific model name")
     previous_sql: Optional[str] = Field(None, description="SQL from previous turn for conversational follow-ups")
     previous_prompt: Optional[str] = Field(None, description="User prompt from previous turn")
+    glossary_terms: Optional[List[GlossaryTerm]] = Field(default=None, description="Custom domain glossary definitions")
+    few_shot_examples: Optional[List[FewShotExample]] = Field(default=None, description="Custom golden question/SQL pairs")
 
 class DirectSQLExecuteRequest(BaseModel):
     sql: str = Field(..., min_length=1, description="Raw SQL query to execute safely")
     db_url: Optional[str] = Field(None, description="Target database URL")
+
 
 class ColumnSchema(BaseModel):
     name: str
