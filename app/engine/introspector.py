@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
@@ -92,25 +92,24 @@ class DatabaseIntrospector:
 
         return schema
 
-    def get_markdown_schema_for_llm(self) -> str:
+    def format_schema_as_markdown(self, schema: Dict[str, Any]) -> str:
         """
-        Converts the database schema into a compact, token-efficient Markdown specification
-        tailored for LLM reasoning and schema linking.
+        Formats structured schema dictionary into compact Markdown tailored for LLM prompt.
         """
-        schema = self.get_structured_schema(include_samples=True)
-        lines = [f"### Database Engine: {schema['database_type'].upper()}"]
-        lines.append("### Tables and Columns Definition:\n")
+        lines = [f"### Database Engine: {schema.get('database_type', self.dialect_name).upper()}"]
+        lines.append(f"### Tables and Columns Definition ({len(schema.get('tables', []))} tables):\n")
 
-        for table in schema["tables"]:
-            lines.append(f"#### Table: `{table['name']}` (approx {table['row_count']} rows)")
+        for table in schema.get("tables", []):
+            lines.append(f"#### Table: `{table['name']}` (approx {table.get('row_count', 0)} rows)")
             col_lines = []
-            for col in table["columns"]:
-                pk_flag = " [PK]" if col["is_primary_key"] else ""
-                samples_str = f" (Sample values: {', '.join([repr(v) for v in col['sample_values']])})" if col["sample_values"] else ""
-                col_lines.append(f"  - `{col['name']}` ({col['type']}){pk_flag}{samples_str}")
+            for col in table.get("columns", []):
+                pk_flag = " [PK]" if col.get("is_primary_key") else ""
+                samples = col.get("sample_values", [])
+                samples_str = f" (Sample values: {', '.join([repr(v) for v in samples])})" if samples else ""
+                col_lines.append(f"  - `{col['name']}` ({col.get('type', 'TEXT')}){pk_flag}{samples_str}")
             lines.extend(col_lines)
 
-            if table["foreign_keys"]:
+            if table.get("foreign_keys"):
                 fk_strs = []
                 for fk in table["foreign_keys"]:
                     fk_strs.append(f"`{', '.join(fk['constrained_columns'])}` -> `{fk['referred_table']}({', '.join(fk['referred_columns'])})`")
@@ -118,6 +117,40 @@ class DatabaseIntrospector:
             lines.append("")
 
         return "\n".join(lines)
+
+    def get_markdown_schema_for_llm(self) -> str:
+        """
+        Converts the database schema into a compact, token-efficient Markdown specification
+        tailored for LLM reasoning and schema linking.
+        """
+        schema = self.get_structured_schema(include_samples=True)
+        return self.format_schema_as_markdown(schema)
+
+    def get_pruned_markdown_schema(
+        self,
+        user_query: str,
+        previous_prompt: Optional[str] = None,
+        glossary_terms: Optional[List[Any]] = None,
+        max_tables: Optional[int] = None,
+        force_prune: bool = False
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Intelligently filters the schema based on query relevance and FK connectivity,
+        returning token-optimized markdown and pruning metrics.
+        """
+        from app.engine.schema_pruner import SchemaPruner
+        full_schema = self.get_structured_schema(include_samples=True)
+        pruner = SchemaPruner()
+        pruned_schema, metadata = pruner.prune(
+            schema=full_schema,
+            user_query=user_query,
+            previous_prompt=previous_prompt,
+            glossary_terms=glossary_terms,
+            max_tables=max_tables,
+            force_prune=force_prune
+        )
+        md = self.format_schema_as_markdown(pruned_schema)
+        return md, metadata
 
     def get_table_preview(self, table_name: str, limit: int = 5) -> Dict[str, Any]:
         """

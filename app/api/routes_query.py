@@ -36,7 +36,9 @@ def generate_and_run(req: NaturalLanguageQueryRequest):
             previous_sql=req.previous_sql,
             previous_prompt=req.previous_prompt,
             glossary_terms=req.glossary_terms,
-            few_shot_examples=req.few_shot_examples
+            few_shot_examples=req.few_shot_examples,
+            prune_schema=req.prune_schema if req.prune_schema is not None else True,
+            max_tables=req.max_tables
         )
 
         

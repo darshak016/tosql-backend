@@ -19,6 +19,13 @@ class DictionaryConfig(BaseModel):
     terms: List[GlossaryTerm] = Field(default_factory=list)
     few_shots: List[FewShotExample] = Field(default_factory=list)
 
+class PruningMetadata(BaseModel):
+    is_pruned: bool = Field(False, description="Whether schema pruning was applied to optimize prompt tokens")
+    total_tables: int = Field(0, description="Total tables present in the database")
+    retained_tables: List[str] = Field(default_factory=list, description="Tables selected and sent to LLM")
+    pruned_tables: List[str] = Field(default_factory=list, description="Tables pruned from the prompt context")
+    estimated_tokens_saved: int = Field(0, description="Estimated prompt tokens saved via pruning")
+
 class NaturalLanguageQueryRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language question")
     db_url: Optional[str] = Field(None, description="Target database URL")
@@ -29,6 +36,8 @@ class NaturalLanguageQueryRequest(BaseModel):
     previous_prompt: Optional[str] = Field(None, description="User prompt from previous turn")
     glossary_terms: Optional[List[GlossaryTerm]] = Field(default=None, description="Custom domain glossary definitions")
     few_shot_examples: Optional[List[FewShotExample]] = Field(default=None, description="Custom golden question/SQL pairs")
+    prune_schema: Optional[bool] = Field(True, description="Whether to prune schema tables for token optimization")
+    max_tables: Optional[int] = Field(None, description="Maximum number of candidate tables to retain when pruning")
 
 class DirectSQLExecuteRequest(BaseModel):
     sql: str = Field(..., min_length=1, description="Raw SQL query to execute safely")
@@ -84,6 +93,7 @@ class QueryResponse(BaseModel):
     error: Optional[str] = None
     self_healed: bool = False
     attempts: Optional[List[Dict[str, Any]]] = None
+    schema_pruning: Optional[PruningMetadata] = None
 
 class ExplainPlanRequest(BaseModel):
     sql: str = Field(..., min_length=1, description="SQL query to explain")

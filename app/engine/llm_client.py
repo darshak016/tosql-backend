@@ -431,11 +431,17 @@ ORDER BY category_revenue DESC"""
                 }
             }
 
-        elif any(term in clean_q for term in ["recent customer", "list customer", "show customer", "all customer"]):
+        elif any(term in clean_q for term in ["recent customer", "list customer", "show customer", "all customer", "customer"]):
+            has_full_name = "full_name" in prompt.lower()
             if is_postgres:
                 c_list_sql = """SELECT id, first_name, last_name, email, country, loyalty_tier, signup_date
 FROM customers
-ORDER BY signup_date DESC
+ORDER BY id ASC
+LIMIT 10"""
+            elif has_full_name:
+                c_list_sql = """SELECT id, full_name, email, country
+FROM customers
+ORDER BY id ASC
 LIMIT 10"""
             else:
                 c_list_sql = """SELECT id, name, email, country, signup_date
@@ -444,12 +450,12 @@ ORDER BY signup_date DESC
 LIMIT 10"""
             return {
                 "sql": c_list_sql,
-                "explanation": "Displays the 10 most recently signed-up customers.",
+                "explanation": "Displays customer records with email and country details.",
                 "suggested_chart": "table",
                 "chart_config": {
-                    "x_axis": "first_name" if is_postgres else "name",
+                    "x_axis": "full_name" if has_full_name else ("first_name" if is_postgres else "name"),
                     "y_axis": "id",
-                    "title": "Recent Customers"
+                    "title": "Customer Records"
                 }
             }
 

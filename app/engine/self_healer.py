@@ -24,11 +24,13 @@ class TextToSQLEngine:
         previous_sql: Optional[str] = None,
         previous_prompt: Optional[str] = None,
         glossary_terms: Optional[list] = None,
-        few_shot_examples: Optional[list] = None
+        few_shot_examples: Optional[list] = None,
+        prune_schema: bool = True,
+        max_tables: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Orchestrates:
-        1. Introspection & schema markdown context
+        1. Introspection & intelligent schema pruning for token optimization
         2. Prompt generation (with conversational context, glossary definitions, and few-shots)
         3. LLM SQL generation
         4. Validation & execution
@@ -46,13 +48,39 @@ class TextToSQLEngine:
                 "chart_config": {},
                 "data": {"columns": [], "rows": [], "row_count": 0, "execution_time_ms": 0},
                 "self_healed": False,
-                "attempts": []
+                "attempts": [],
+                "schema_pruning": {
+                    "is_pruned": False,
+                    "total_tables": 0,
+                    "retained_tables": [],
+                    "pruned_tables": [],
+                    "estimated_tokens_saved": 0
+                }
             }
 
         # Guard against excessively long prompt overflow (cap at 4,000 chars)
         capped_prompt = clean_prompt[:4000]
 
-        schema_md = self.get_schema_markdown()
+        # Fetch pruned or full schema markdown
+        if prune_schema:
+            schema_md, pruning_meta = self.introspector.get_pruned_markdown_schema(
+                user_query=capped_prompt,
+                previous_prompt=previous_prompt,
+                glossary_terms=glossary_terms,
+                max_tables=max_tables
+            )
+        else:
+            schema_md = self.get_schema_markdown()
+            structured = self.introspector.get_structured_schema(include_samples=False)
+            table_names = [t["name"] for t in structured.get("tables", [])]
+            pruning_meta = {
+                "is_pruned": False,
+                "total_tables": len(table_names),
+                "retained_tables": table_names,
+                "pruned_tables": [],
+                "estimated_tokens_saved": 0
+            }
+
         dialect = self.introspector.dialect_name
 
         attempts_log: List[Dict[str, Any]] = []
@@ -101,7 +129,8 @@ class TextToSQLEngine:
                         "execution_time_ms": 0
                     },
                     "self_healed": False,
-                    "attempts": []
+                    "attempts": [],
+                    "schema_pruning": pruning_meta
                 }
 
             # Execute SQL
@@ -134,7 +163,8 @@ class TextToSQLEngine:
                         "execution_time_ms": exec_res.get("execution_time_ms", 0)
                     },
                     "self_healed": attempt > 0,
-                    "attempts": attempts_log
+                    "attempts": attempts_log,
+                    "schema_pruning": pruning_meta
                 }
             else:
                 # Query failed, prepare for self-healing retry
@@ -153,7 +183,8 @@ class TextToSQLEngine:
             "chart_config": {},
             "data": {"columns": [], "rows": [], "row_count": 0, "execution_time_ms": 0},
             "self_healed": False,
-            "attempts": attempts_log
+            "attempts": attempts_log,
+            "schema_pruning": pruning_meta
         }
 
     def _extract_sql_breakdown(self, sql: str) -> Dict[str, List[str]]:
