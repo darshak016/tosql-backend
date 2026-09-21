@@ -58,7 +58,12 @@ CRITICAL RULES:
     "x_axis": "column_name_for_labels",
     "y_axis": "column_name_for_values",
     "title": "Descriptive Chart Title"
-  }
+  },
+  "follow_up_suggestions": [
+    { "label": "Short label (e.g. Top 3 only)", "prompt": "Complete natural refinement prompt (e.g. Filter to only the top 3)" },
+    { "label": "Short label (e.g. Sort descending)", "prompt": "Complete natural refinement prompt (e.g. Sort by total revenue descending)" },
+    { "label": "Short label (e.g. Include status)", "prompt": "Complete natural refinement prompt (e.g. Include the order status column as well)" }
+  ]
 }
 8. GREETINGS & NON-DATABASE PROMPTS:
 If the user's input is a greeting (e.g. "hello", "hi", "hey", "how are you"), a conversational remark, or unrelated to querying the schema, set "sql" to empty string "", set "breakdown" to null, and in "explanation" provide a friendly response explaining what database tables exist and inviting them to ask a question (e.g. "Hello! I can help you analyze your database. Ask me a question about your customers, orders, or products.").

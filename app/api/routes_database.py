@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from app.api.schemas import ConnectRequest, DatabaseSchemaResponse, DictionaryConfig
 
 from app.engine.introspector import DatabaseIntrospector
+from app.engine.llm_client import LLMClient
 from app.samples.seed_samples import seed_ecommerce_db
 from app.core.config import settings
 
@@ -74,52 +75,178 @@ def get_table_preview(table_name: str, db_url: str = None, limit: int = 5):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to preview table {table_name}: {str(e)}")
 
-@router.get("/sample-queries")
-def get_sample_queries():
-    return {
-        "samples": [
-            {
-                "title": "Top Customers by Spend",
-                "prompt": "Show top 5 customers who spent the most on completed orders",
-                "tag": "Aggregation & Join"
-            },
-            {
-                "title": "Monthly Sales Trend",
-                "prompt": "Show monthly total sales revenue and order count over time",
-                "tag": "Time-Series"
-            },
-            {
-                "title": "Department Payroll & Budget",
-                "prompt": "List each department with their annual budget and total employee salary payroll",
-                "tag": "Human Resources"
-            },
-            {
-                "title": "Marketing Campaign ROI",
-                "prompt": "Which marketing campaigns generated the highest revenue compared to their spend?",
-                "tag": "Marketing Analytics"
-            },
-            {
-                "title": "Product Ratings by Category",
-                "prompt": "What is the average product review rating and review count by category?",
-                "tag": "Reviews & Sentiment"
-            },
-            {
-                "title": "Critical Low Stock Products",
-                "prompt": "Which products have less than 50 units in stock?",
-                "tag": "Inventory"
-            },
-            {
-                "title": "Revenue by Product Category",
-                "prompt": "What is the total revenue and units sold per product category?",
-                "tag": "Multi-Table Join"
-            },
-            {
-                "title": "Carrier Shipment Volume",
-                "prompt": "How many shipments were handled by each carrier and their delivery status?",
-                "tag": "Logistics"
-            }
+def generate_dynamic_samples_for_schema(schema: dict) -> list:
+    """
+    Intelligently generates natural-language starter query suggestions
+    directly tailored to the tables, columns, and foreign keys of the active database.
+    """
+    tables = schema.get("tables", [])
+    if not tables:
+        return []
+
+    samples = []
+    
+    # 1. Multi-table join suggestion if foreign keys exist
+    join_candidate = None
+    for tbl in tables:
+        fks = tbl.get("foreign_keys", [])
+        if fks:
+            fk = fks[0]
+            ref_tbl = fk.get("referred_table")
+            if ref_tbl:
+                join_candidate = (tbl["name"], ref_tbl)
+                break
+    
+    if join_candidate:
+        child_tbl, parent_tbl = join_candidate
+        samples.append({
+            "title": f"{child_tbl.capitalize()} with {parent_tbl.capitalize()}",
+            "prompt": f"List the top 10 {child_tbl} along with their associated {parent_tbl} details",
+            "tag": "Relationship Join"
+        })
+
+    # 2. Aggregation / Top records on table with numeric or amount column
+    for tbl in tables:
+        num_cols = [
+            c["name"] for c in tbl.get("columns", [])
+            if any(t in c["type"].lower() for t in ["int", "float", "numeric", "decimal", "double", "real"])
+            and not c.get("is_primary_key") and not c["name"].endswith("_id")
         ]
-    }
+        cat_cols = [
+            c["name"] for c in tbl.get("columns", [])
+            if any(t in c["type"].lower() for t in ["char", "text", "str", "varchar"])
+            and not c["name"].endswith("_id")
+        ]
+        
+        if num_cols and cat_cols:
+            n_col = num_cols[0]
+            c_col = cat_cols[0]
+            samples.append({
+                "title": f"Top {tbl['name'].capitalize()} by {n_col.replace('_', ' ').capitalize()}",
+                "prompt": f"Show total and average {n_col.replace('_', ' ')} grouped by {c_col.replace('_', ' ')} in {tbl['name']}",
+                "tag": "Aggregation"
+            })
+            break
+
+    # 3. Categorical distribution / Group By query
+    for tbl in tables:
+        cat_cols = [
+            c["name"] for c in tbl.get("columns", [])
+            if any(t in c["type"].lower() for t in ["char", "text", "varchar"])
+            and not c.get("is_primary_key") and not c["name"].endswith("_id")
+        ]
+        if cat_cols:
+            c_col = cat_cols[0]
+            samples.append({
+                "title": f"{tbl['name'].capitalize()} Breakdown by {c_col.capitalize()}",
+                "prompt": f"What is the distribution and count of {tbl['name']} broken down by {c_col.replace('_', ' ')}?",
+                "tag": "Grouping & Count"
+            })
+            break
+
+    # 4. Recent / Date-based or Latest records if timestamp/date exists
+    for tbl in tables:
+        date_cols = [
+            c["name"] for c in tbl.get("columns", [])
+            if any(t in c["type"].lower() for t in ["date", "time"])
+        ]
+        if date_cols:
+            d_col = date_cols[0]
+            samples.append({
+                "title": f"Latest {tbl['name'].capitalize()}",
+                "prompt": f"Show the most recent 10 records from {tbl['name']} ordered by {d_col} descending",
+                "tag": "Time Filter"
+            })
+            break
+
+    # 5. Fallback general query on largest or first table
+    if len(samples) < 3 and tables:
+        first_tbl = tables[0]["name"]
+        samples.append({
+            "title": f"Explore {first_tbl.capitalize()}",
+            "prompt": f"Show the first 10 records from {first_tbl}",
+            "tag": "Exploration"
+        })
+
+    return samples[:6]
+
+# In-memory cache for dynamic LLM/schema suggestions per DB URL
+_suggestions_cache = {}
+
+@router.get("/sample-queries")
+def get_sample_queries(
+    db_url: str = None, 
+    api_key: str = None, 
+    provider: str = "gemini", 
+    model_name: str = None
+):
+    target_url = get_current_db_url(db_url)
+    
+    # Check if target is the default ecommerce SQLite database
+    norm_target = target_url.replace(os.sep, "/").lower()
+    norm_default = settings.DEFAULT_DB_PATH.replace(os.sep, "/").lower()
+    is_default_ecommerce = "ecommerce.db" in norm_target or norm_default in norm_target
+
+    if is_default_ecommerce:
+        return {
+            "samples": [
+                {
+                    "title": "Top Customers by Spend",
+                    "prompt": "Show top 5 customers who spent the most on completed orders",
+                    "tag": "Aggregation & Join"
+                },
+                {
+                    "title": "Monthly Sales Trend",
+                    "prompt": "Show monthly total sales revenue and order count over time",
+                    "tag": "Time-Series"
+                },
+                {
+                    "title": "Revenue by Product Category",
+                    "prompt": "What is the total revenue and units sold per product category?",
+                    "tag": "Multi-Table Join"
+                },
+                {
+                    "title": "Critical Low Stock Products",
+                    "prompt": "Which products have less than 50 units in stock?",
+                    "tag": "Inventory"
+                },
+                {
+                    "title": "Average Order Value",
+                    "prompt": "What is the average order total amount for completed orders?",
+                    "tag": "Aggregation"
+                },
+                {
+                    "title": "Top Rated Products",
+                    "prompt": "List the top 5 highest rated products with their category and price",
+                    "tag": "Ranking"
+                }
+            ]
+        }
+
+    # Check cache first for custom database
+    if target_url in _suggestions_cache:
+        return {"samples": _suggestions_cache[target_url]}
+
+    try:
+        introspector = DatabaseIntrospector(target_url)
+        schema = introspector.get_structured_schema(include_samples=False)
+        schema_markdown = introspector.format_schema_as_markdown(schema)
+
+        # 1. Attempt LLM-based suggestion generation
+        llm = LLMClient(api_key=api_key, provider=provider, model_name=model_name)
+        llm_samples = llm.generate_suggestions(schema_markdown)
+
+        if llm_samples and isinstance(llm_samples, list) and len(llm_samples) > 0:
+            _suggestions_cache[target_url] = llm_samples
+            return {"samples": llm_samples}
+
+        # 2. Heuristic fallback if LLM has no key or fails
+        fallback_samples = generate_dynamic_samples_for_schema(schema)
+        _suggestions_cache[target_url] = fallback_samples
+        return {"samples": fallback_samples}
+    except Exception as e:
+        print(f"[!] Error generating sample queries: {e}")
+        return {"samples": []}
 
 # Default bundled glossary terms and few-shot examples for sample ecommerce DB
 _sample_dictionary = {

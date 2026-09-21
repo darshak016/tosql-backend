@@ -81,6 +81,10 @@ class QueryBreakdown(BaseModel):
     aggregations: List[str] = Field(default_factory=list, description="Aggregations or group-bys used")
     assumptions: List[str] = Field(default_factory=list, description="Assumptions or business logic caveats")
 
+class FollowUpSuggestion(BaseModel):
+    label: str = Field(..., description="Short clickable chip label")
+    prompt: str = Field(..., description="Full refinement prompt text")
+
 class QueryResponse(BaseModel):
     success: bool
     prompt: Optional[str] = None
@@ -89,6 +93,7 @@ class QueryResponse(BaseModel):
     breakdown: Optional[QueryBreakdown] = None
     suggested_chart: Optional[str] = "table"
     chart_config: Optional[Dict[str, Any]] = None
+    follow_up_suggestions: Optional[List[FollowUpSuggestion]] = Field(default_factory=list)
     data: QueryResultData
     error: Optional[str] = None
     self_healed: bool = False

@@ -53,6 +53,78 @@ class LLMClient:
             few_shot_examples=few_shot_examples
         )
 
+    def generate_suggestions(self, schema_markdown: str) -> Optional[list]:
+        """
+        Uses configured LLM (Gemini / OpenAI) to generate 5-6 natural language business query suggestions
+        strictly based on the inspected schema. Returns None if LLM is unavailable or fails.
+        """
+        # Resolve active API key
+        if not self.api_key:
+            if self.provider == "gemini":
+                self.api_key = os.environ.get("GEMINI_API_KEY") or settings.GEMINI_API_KEY
+            else:
+                self.api_key = os.environ.get("OPENAI_API_KEY") or settings.OPENAI_API_KEY
+
+        if not self.api_key:
+            return None
+
+        prompt = f"""You are an expert Data Analyst & Business Intelligence architect.
+Analyze the following database schema and propose 6 insightful, realistic business questions a user or executive would ask.
+
+### Database Schema:
+{schema_markdown}
+
+### Output Instructions:
+Output ONLY a raw JSON object (with NO markdown formatting or markdown code blocks) matching this exact schema:
+{{
+  "samples": [
+    {{
+      "title": "Short punchy title (3-5 words)",
+      "prompt": "Natural language question in plain English",
+      "tag": "Short category tag like Aggregation, Logistics, Revenue, Customers, or Ranking"
+    }}
+  ]
+}}
+Ensure the questions strictly reference tables, columns, and relationships that actually exist in the schema.
+"""
+
+        try:
+            if self.provider == "gemini":
+                try:
+                    from google import genai
+                    from google.genai import types
+                    client = genai.Client(api_key=self.api_key)
+                    resp = client.models.generate_content(
+                        model=self.model_name or "gemini-2.5-flash",
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    data = self._clean_and_parse_json(resp.text)
+                    return data.get("samples")
+                except Exception:
+                    import google.generativeai as legacy_genai
+                    legacy_genai.configure(api_key=self.api_key)
+                    model = legacy_genai.GenerativeModel(model_name="gemini-1.5-flash")
+                    resp = model.generate_content(prompt)
+                    data = self._clean_and_parse_json(resp.text)
+                    return data.get("samples")
+            elif self.provider == "openai":
+                from openai import OpenAI
+                client = OpenAI(api_key=self.api_key, base_url=settings.OPENAI_BASE_URL or None)
+                resp = client.chat.completions.create(
+                    model=self.model_name or "gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a professional Business Intelligence data analyst who returns JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"}
+                )
+                data = self._clean_and_parse_json(resp.choices[0].message.content)
+                return data.get("samples")
+        except Exception as err:
+            print(f"[!] LLM suggestion generation error: {err}")
+            return None
+
 
     def _call_gemini(self, prompt: str) -> Dict[str, Any]:
         try:

@@ -148,6 +148,13 @@ class TextToSQLEngine:
                 final_sql = exec_res.get("sanitized_sql", generated_sql)
                 breakdown = ai_output.get("breakdown") or self._extract_sql_breakdown(final_sql)
 
+                # Extract follow-up suggestions from AI output with smart default fallback
+                follow_ups = ai_output.get("follow_up_suggestions") or [
+                    {"label": "Only top 3", "prompt": "Only show the top 3"},
+                    {"label": "Sort lowest first", "prompt": "Sort ascending (lowest first)"},
+                    {"label": "Include all columns", "prompt": "Show all columns for these records"},
+                ]
+
                 return {
                     "success": True,
                     "prompt": user_prompt,
@@ -156,6 +163,7 @@ class TextToSQLEngine:
                     "breakdown": breakdown,
                     "suggested_chart": ai_output.get("suggested_chart", "table"),
                     "chart_config": ai_output.get("chart_config", {}),
+                    "follow_up_suggestions": follow_ups,
                     "data": {
                         "columns": exec_res.get("columns", []),
                         "rows": exec_res.get("rows", []),
