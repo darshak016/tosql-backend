@@ -3,17 +3,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.samples.seed_samples import seed_ecommerce_db
 from app.api.routes_database import router as db_router
 from app.api.routes_query import router as query_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure sample database exists
-    if not os.path.exists(settings.DEFAULT_DB_PATH):
-        print(f"[*] Initializing sample e-commerce database at {settings.DEFAULT_DB_PATH}...")
-        seed_ecommerce_db(settings.DEFAULT_DB_PATH)
-        print("[+] Sample database ready.")
+    # Startup: If DATABASE_URL is configured, test connection on startup
+    if settings.DATABASE_URL:
+        print(f"[*] Database URL configured: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
+    else:
+        print("[*] No default DATABASE_URL configured. Waiting for connection via environment or UI.")
     yield
 
 app = FastAPI(
@@ -42,7 +41,7 @@ def health_check():
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "api_docs": "/docs",
-        "default_db": settings.DEFAULT_DB_PATH
+        "has_database": bool(settings.DATABASE_URL)
     }
 
 if __name__ == "__main__":

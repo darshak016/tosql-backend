@@ -4,20 +4,24 @@ from app.api.schemas import ConnectRequest, DatabaseSchemaResponse, DictionaryCo
 
 from app.engine.introspector import DatabaseIntrospector
 from app.engine.llm_client import LLMClient
-from app.samples.seed_samples import seed_ecommerce_db
 from app.core.config import settings
 
 router = APIRouter(prefix="/database", tags=["Database"])
 
-# In-memory current connection state
+# In-memory current connection state initialized from DATABASE_URL if configured
 current_db = {
-    "url": f"sqlite:///{settings.DEFAULT_DB_PATH.replace(os.sep, '/')}"
+    "url": settings.DATABASE_URL or os.environ.get("DATABASE_URL") or None
 }
 
 def get_current_db_url(override_url: str = None) -> str:
     if override_url and override_url.strip():
         return override_url.strip()
-    return current_db["url"]
+    if current_db["url"]:
+        return current_db["url"]
+    raise HTTPException(
+        status_code=400,
+        detail="No database connected. Please configure DATABASE_URL in your environment or connect via the database modal."
+    )
 
 @router.post("/connect")
 def connect_database(req: ConnectRequest):
@@ -26,11 +30,12 @@ def connect_database(req: ConnectRequest):
             db_url = req.db_url.strip()
             if db_url.startswith("postgres://"):
                 db_url = db_url.replace("postgres://", "postgresql://", 1)
+        elif settings.DATABASE_URL or os.environ.get("DATABASE_URL"):
+            db_url = settings.DATABASE_URL or os.environ.get("DATABASE_URL")
+            if db_url.startswith("postgres://"):
+                db_url = db_url.replace("postgres://", "postgresql://", 1)
         else:
-            # Ensure sample db exists
-            if not os.path.exists(settings.DEFAULT_DB_PATH):
-                seed_ecommerce_db(settings.DEFAULT_DB_PATH)
-            db_url = f"sqlite:///{settings.DEFAULT_DB_PATH.replace(os.sep, '/')}"
+            raise ValueError("No database URL provided and DATABASE_URL is not set in environment.")
 
         # Test introspection
         introspector = DatabaseIntrospector(db_url)
@@ -180,50 +185,12 @@ def get_sample_queries(
     provider: str = "gemini", 
     model_name: str = None
 ):
-    target_url = get_current_db_url(db_url)
+    try:
+        target_url = get_current_db_url(db_url)
+    except HTTPException:
+        return {"samples": []}
     
-    # Check if target is the default ecommerce SQLite database
-    norm_target = target_url.replace(os.sep, "/").lower()
-    norm_default = settings.DEFAULT_DB_PATH.replace(os.sep, "/").lower()
-    is_default_ecommerce = "ecommerce.db" in norm_target or norm_default in norm_target
-
-    if is_default_ecommerce:
-        return {
-            "samples": [
-                {
-                    "title": "Top Customers by Spend",
-                    "prompt": "Show top 5 customers who spent the most on completed orders",
-                    "tag": "Aggregation & Join"
-                },
-                {
-                    "title": "Monthly Sales Trend",
-                    "prompt": "Show monthly total sales revenue and order count over time",
-                    "tag": "Time-Series"
-                },
-                {
-                    "title": "Revenue by Product Category",
-                    "prompt": "What is the total revenue and units sold per product category?",
-                    "tag": "Multi-Table Join"
-                },
-                {
-                    "title": "Critical Low Stock Products",
-                    "prompt": "Which products have less than 50 units in stock?",
-                    "tag": "Inventory"
-                },
-                {
-                    "title": "Average Order Value",
-                    "prompt": "What is the average order total amount for completed orders?",
-                    "tag": "Aggregation"
-                },
-                {
-                    "title": "Top Rated Products",
-                    "prompt": "List the top 5 highest rated products with their category and price",
-                    "tag": "Ranking"
-                }
-            ]
-        }
-
-    # Check cache first for custom database
+    # Check cache first for target database
     if target_url in _suggestions_cache:
         return {"samples": _suggestions_cache[target_url]}
 

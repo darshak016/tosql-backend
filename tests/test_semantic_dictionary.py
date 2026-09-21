@@ -1,11 +1,21 @@
 import pytest
 from app.engine.prompt_builder import build_sql_generation_prompt
 from app.engine.self_healer import TextToSQLEngine
-from app.core.config import settings
+import os
+from app.samples.seed_samples import seed_ecommerce_db
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def sample_db_url():
-    return f"sqlite:///{settings.DEFAULT_DB_PATH}"
+    db_dir = os.path.join(os.path.dirname(__file__), "temp")
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "test_dict_ecommerce.db")
+    seed_ecommerce_db(db_path)
+    url = f"sqlite:///{db_path.replace(os.sep, '/')}"
+    yield url
+    try:
+        os.remove(db_path)
+    except Exception:
+        pass
 
 def test_prompt_builder_includes_glossary_terms():
     glossary = [

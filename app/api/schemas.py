@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 class ConnectRequest(BaseModel):
     db_url: Optional[str] = Field(None, description="SQLAlchemy connection URL (sqlite, postgresql, mysql)")
-    use_sample_db: bool = Field(True, description="Connect to bundled sample ecommerce SQLite DB")
+    use_sample_db: Optional[bool] = Field(False, description="Deprecated legacy flag")
 
 class GlossaryTerm(BaseModel):
     term: str = Field(..., min_length=1, description="Domain specific business term or alias")

@@ -12,10 +12,8 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: Optional[str] = None
     DEFAULT_MODEL: str = "gemini-2.5-flash"
     
-    # Default Database Path
-    DEFAULT_DB_PATH: str = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "samples", "ecommerce.db")
-    )
+    # Database Connection
+    DATABASE_URL: Optional[str] = None
     
     # Security
     MAX_QUERY_ROWS: int = 200

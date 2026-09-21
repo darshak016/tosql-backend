@@ -2,11 +2,20 @@ import pytest
 import os
 from app.engine.query_runner import QueryRunner
 from app.core.security import validate_query_for_explain, strip_explain_prefix
-from app.core.config import settings
+from app.samples.seed_samples import seed_ecommerce_db
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def sample_db_url():
-    return f"sqlite:///{settings.DEFAULT_DB_PATH}"
+    db_dir = os.path.join(os.path.dirname(__file__), "temp")
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "test_explain_plan.db")
+    seed_ecommerce_db(db_path)
+    url = f"sqlite:///{db_path.replace(os.sep, '/')}"
+    yield url
+    try:
+        os.remove(db_path)
+    except Exception:
+        pass
 
 def test_strip_explain_prefix():
     assert strip_explain_prefix("EXPLAIN SELECT * FROM customers") == "SELECT * FROM customers"
