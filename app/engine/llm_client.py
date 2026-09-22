@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 import asyncio
 from typing import Dict, Any, Optional
 from app.core.config import settings
@@ -171,17 +172,32 @@ Ensure the questions strictly reference tables, columns, and relationships that 
                     from google import genai
                     from google.genai import types
                     client = genai.Client(api_key=self.api_key)
-                    resp = client.models.generate_content(
-                        model=self.model_name or "gemini-2.5-flash",
-                        contents=prompt,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
-                    )
-                    data = self._clean_and_parse_json(resp.text)
-                    return data.get("samples")
+                    # Retry with backoff for 503 UNAVAILABLE
+                    last_err = None
+                    for attempt in range(3):
+                        try:
+                            resp = client.models.generate_content(
+                                model=self.model_name or "gemini-2.5-flash",
+                                contents=prompt,
+                                config=types.GenerateContentConfig(response_mime_type="application/json")
+                            )
+                            data = self._clean_and_parse_json(resp.text)
+                            return data.get("samples")
+                        except Exception as e:
+                            last_err = e
+                            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                                wait_time = 2 ** (attempt + 1)
+                                print(f"[!] Gemini 503 UNAVAILABLE, retrying in {wait_time}s (attempt {attempt + 1}/3)")
+                                time.sleep(wait_time)
+                                continue
+                            raise
+                    if last_err is not None:
+                        raise last_err
+                    raise RuntimeError("Gemini model call failed without capturing an exception")
                 except Exception:
                     import google.generativeai as legacy_genai
                     legacy_genai.configure(api_key=self.api_key)
-                    model = legacy_genai.GenerativeModel(model_name="gemini-1.5-flash")
+                    model = legacy_genai.GenerativeModel(model_name="gemini-2.0-flash")
                     resp = model.generate_content(prompt)
                     data = self._clean_and_parse_json(resp.text)
                     return data.get("samples")
@@ -205,28 +221,41 @@ Ensure the questions strictly reference tables, columns, and relationships that 
 
     def _call_gemini(self, prompt: str) -> Dict[str, Any]:
         try:
-            # Try official google.genai first
+            # Try official google.genai first with retry for 503 UNAVAILABLE
             from google import genai
             from google.genai import types
 
             client = genai.Client(api_key=self.api_key)
-            response = client.models.generate_content(
-                model=self.model_name or "gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    response_mime_type="application/json"
-                )
-            )
-            raw_text = response.text
-            return self._clean_and_parse_json(raw_text)
+            last_err = None
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=self.model_name or "gemini-2.5-flash",
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            response_mime_type="application/json"
+                        )
+                    )
+                    raw_text = response.text
+                    return self._clean_and_parse_json(raw_text)
+                except Exception as e:
+                    last_err = e
+                    if "503" in str(e) or "UNAVAILABLE" in str(e):
+                        wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                        print(f"[!] Gemini 503 UNAVAILABLE, retrying in {wait_time}s (attempt {attempt + 1}/3)")
+                        time.sleep(wait_time)
+                        continue
+            if last_err is not None:
+                raise last_err
+            raise RuntimeError("Gemini model call failed without capturing an exception")
         except Exception as genai_err:
             # Fallback to google.generativeai if available
             try:
                 import google.generativeai as legacy_genai
                 legacy_genai.configure(api_key=self.api_key)
                 model = legacy_genai.GenerativeModel(
-                    model_name="gemini-1.5-flash",
+                    model_name="gemini-2.0-flash",
                     system_instruction=SYSTEM_INSTRUCTION
                 )
                 response = model.generate_content(prompt)
