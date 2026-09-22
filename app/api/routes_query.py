@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException
 from app.api.schemas import (
     NaturalLanguageQueryRequest, 
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/query", tags=["Query"])
 query_history = []
 
 @router.post("/generate-and-run", response_model=QueryResponse)
-def generate_and_run(req: NaturalLanguageQueryRequest):
+async def generate_and_run(req: NaturalLanguageQueryRequest):
     target_url = get_current_db_url(req.db_url)
     
     llm_client = LLMClient(
@@ -30,7 +31,7 @@ def generate_and_run(req: NaturalLanguageQueryRequest):
     engine = TextToSQLEngine(db_url=target_url, llm_client=llm_client)
 
     try:
-        result = engine.process_natural_language_query(
+        result = await engine.process_natural_language_query_async(
             user_prompt=req.prompt,
             max_self_heal_retries=2,
             previous_sql=req.previous_sql,
@@ -57,11 +58,11 @@ def generate_and_run(req: NaturalLanguageQueryRequest):
         raise HTTPException(status_code=500, detail=f"Text-to-SQL processing error: {str(e)}")
 
 @router.post("/execute-sql")
-def execute_sql(req: DirectSQLExecuteRequest):
+async def execute_sql(req: DirectSQLExecuteRequest):
     target_url = get_current_db_url(req.db_url)
     runner = QueryRunner(target_url)
 
-    exec_res = runner.execute_query(req.sql)
+    exec_res = await asyncio.to_thread(runner.execute_query, req.sql)
     if not exec_res.get("success"):
         return {
             "success": False,
@@ -82,12 +83,11 @@ def execute_sql(req: DirectSQLExecuteRequest):
     }
 
 @router.post("/explain-sql", response_model=ExplainPlanResponse)
-def explain_sql(req: ExplainPlanRequest):
+async def explain_sql(req: ExplainPlanRequest):
     target_url = get_current_db_url(req.db_url)
     runner = QueryRunner(target_url)
-    return runner.explain_query(req.sql)
+    return await asyncio.to_thread(runner.explain_query, req.sql)
 
 @router.get("/history")
-def get_history():
+async def get_history():
     return {"history": query_history[:30]}
-

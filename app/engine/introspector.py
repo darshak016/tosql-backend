@@ -1,19 +1,33 @@
 import os
 from typing import Dict, List, Any, Optional, Tuple
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from app.core.connection_pool import get_engine
+from app.core.schema_cache import (
+    schema_cache,
+    CACHE_STRUCTURED_SAMPLES,
+    CACHE_STRUCTURED_NO_SAMPLES,
+    CACHE_MARKDOWN,
+)
 
 class DatabaseIntrospector:
     def __init__(self, db_url: str):
         self.db_url = db_url
-        self.engine: Engine = create_engine(db_url)
+        self.engine: Engine = get_engine(db_url)
         self.dialect_name = self.engine.dialect.name
 
     def get_structured_schema(self, include_samples: bool = True) -> Dict[str, Any]:
         """
         Inspects the database and returns a structured dictionary of tables, columns,
         foreign keys, and distinct sample values.
+        Results are cached with a 5-minute TTL to avoid repeated expensive introspection.
         """
+        # Check cache first
+        cache_suffix = CACHE_STRUCTURED_SAMPLES if include_samples else CACHE_STRUCTURED_NO_SAMPLES
+        cached = schema_cache.get(self.db_url, suffix=cache_suffix)
+        if cached is not None:
+            return cached
+
         inspector = inspect(self.engine)
         if self.dialect_name == "postgresql":
             table_names = inspector.get_table_names(schema="public")
@@ -26,6 +40,19 @@ class DatabaseIntrospector:
             "tables": []
         }
 
+        # For PostgreSQL, use pg_stat_user_tables for fast approximate row counts
+        pg_row_counts: Dict[str, int] = {}
+        if self.dialect_name == "postgresql":
+            try:
+                with self.engine.connect() as conn:
+                    stat_res = conn.execute(text(
+                        "SELECT relname, n_live_tup FROM pg_stat_user_tables WHERE schemaname = 'public'"
+                    ))
+                    for row in stat_res.fetchall():
+                        pg_row_counts[row[0]] = int(row[1])
+            except Exception:
+                pass
+
         with self.engine.connect() as conn:
             for table_name in table_names:
                 columns_meta = inspector.get_columns(table_name)
@@ -33,14 +60,17 @@ class DatabaseIntrospector:
                 pk_constraint = inspector.get_pk_constraint(table_name)
                 pk_cols = pk_constraint.get("constrained_columns", []) if pk_constraint else []
 
-                # Count rows & fetch sample rows in a single query per table
+                # Count rows: use pg_stat for PostgreSQL, COUNT(*) otherwise
                 row_count = 0
                 sample_rows_by_col = {}
-                try:
-                    count_res = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
-                    row_count = count_res or 0
-                except Exception:
-                    pass
+                if table_name in pg_row_counts:
+                    row_count = pg_row_counts[table_name]
+                else:
+                    try:
+                        count_res = conn.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
+                        row_count = count_res or 0
+                    except Exception:
+                        pass
 
                 if include_samples and row_count > 0:
                     try:
@@ -90,6 +120,8 @@ class DatabaseIntrospector:
                     "foreign_keys": formatted_fks
                 })
 
+        # Store in cache
+        schema_cache.set(self.db_url, schema, suffix=cache_suffix)
         return schema
 
     def format_schema_as_markdown(self, schema: Dict[str, Any]) -> str:
@@ -121,10 +153,16 @@ class DatabaseIntrospector:
     def get_markdown_schema_for_llm(self) -> str:
         """
         Converts the database schema into a compact, token-efficient Markdown specification
-        tailored for LLM reasoning and schema linking.
+        tailored for LLM reasoning and schema linking. Result is cached.
         """
+        cached_md = schema_cache.get(self.db_url, suffix=CACHE_MARKDOWN)
+        if cached_md is not None:
+            return cached_md
+
         schema = self.get_structured_schema(include_samples=True)
-        return self.format_schema_as_markdown(schema)
+        md = self.format_schema_as_markdown(schema)
+        schema_cache.set(self.db_url, md, suffix=CACHE_MARKDOWN)
+        return md
 
     def get_pruned_markdown_schema(
         self,

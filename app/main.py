@@ -5,15 +5,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.routes_database import router as db_router
 from app.api.routes_query import router as query_router
+from app.api.routes_query_stream import router as stream_router
+from app.core.connection_pool import dispose_all_engines
+from app.core.schema_cache import schema_cache
+from app.core.llm_cache import llm_cache
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: If DATABASE_URL is configured, test connection on startup
+    # Startup
     if settings.DATABASE_URL:
         print(f"[*] Database URL configured: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else settings.DATABASE_URL}")
     else:
         print("[*] No default DATABASE_URL configured. Waiting for connection via environment or UI.")
+    print("[*] Performance optimizations active: Connection Pooling, Schema Cache (TTL=300s), LLM Cache (TTL=600s), Async I/O")
     yield
+    # Shutdown: clean up connection pools
+    print("[*] Disposing connection pools...")
+    dispose_all_engines()
+    schema_cache.invalidate_all()
+    llm_cache.invalidate_all()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -34,14 +44,19 @@ app.add_middleware(
 # Include API routes
 app.include_router(db_router, prefix=settings.API_V1_STR)
 app.include_router(query_router, prefix=settings.API_V1_STR)
+app.include_router(stream_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
-def health_check():
+async def health_check():
     return {
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "api_docs": "/docs",
-        "has_database": bool(settings.DATABASE_URL)
+        "has_database": bool(settings.DATABASE_URL),
+        "performance": {
+            "schema_cache": schema_cache.stats(),
+            "llm_cache": llm_cache.stats()
+        }
     }
 
 if __name__ == "__main__":

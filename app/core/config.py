@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     MAX_QUERY_ROWS: int = 200
     EXECUTION_TIMEOUT_SECONDS: int = 15
 
+    # Performance
+    WORKERS: int = 4
+    IS_DEV: bool = True
+    POOL_SIZE: int = 10
+    SCHEMA_CACHE_TTL: int = 300
+    LLM_CACHE_TTL: int = 600
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 settings = Settings()

@@ -2,15 +2,16 @@ import time
 from typing import Dict, Any, Optional
 from datetime import date, datetime
 from decimal import Decimal
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from app.core.security import validate_and_sanitize_sql
 from app.core.config import settings
+from app.core.connection_pool import get_engine
 
 class QueryRunner:
     def __init__(self, db_url: str):
         self.db_url = db_url
-        self.engine: Engine = create_engine(db_url)
+        self.engine: Engine = get_engine(db_url)
         self.dialect = self.engine.dialect.name
 
     def execute_query(self, raw_sql: str, bypass_validation: bool = False) -> Dict[str, Any]:

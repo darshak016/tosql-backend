@@ -1,10 +1,13 @@
 import os
+import asyncio
 from fastapi import APIRouter, HTTPException
 from app.api.schemas import ConnectRequest, DatabaseSchemaResponse, DictionaryConfig
 
 from app.engine.introspector import DatabaseIntrospector
 from app.engine.llm_client import LLMClient
 from app.core.config import settings
+from app.core.schema_cache import schema_cache
+from app.core.connection_pool import dispose_engine
 
 router = APIRouter(prefix="/database", tags=["Database"])
 
@@ -24,7 +27,7 @@ def get_current_db_url(override_url: str = None) -> str:
     )
 
 @router.post("/connect")
-def connect_database(req: ConnectRequest):
+async def connect_database(req: ConnectRequest):
     try:
         if req.db_url and req.db_url.strip():
             db_url = req.db_url.strip()
@@ -39,7 +42,11 @@ def connect_database(req: ConnectRequest):
 
         # Test introspection
         introspector = DatabaseIntrospector(db_url)
-        schema = introspector.get_structured_schema(include_samples=True)
+
+        # Invalidate caches for this URL on reconnection
+        schema_cache.invalidate(db_url)
+
+        schema = await asyncio.to_thread(introspector.get_structured_schema, True)
         
         # Update current active URL
         current_db["url"] = db_url
@@ -56,11 +63,11 @@ def connect_database(req: ConnectRequest):
         raise HTTPException(status_code=400, detail=f"Failed to connect to database: {str(e)}")
 
 @router.get("/schema", response_model=DatabaseSchemaResponse)
-def get_schema(db_url: str = None):
+async def get_schema(db_url: str = None):
     target_url = get_current_db_url(db_url)
     try:
         introspector = DatabaseIntrospector(target_url)
-        schema = introspector.get_structured_schema(include_samples=True)
+        schema = await asyncio.to_thread(introspector.get_structured_schema, True)
         return {
             "database_type": schema["database_type"],
             "table_count": schema["table_count"],
@@ -71,11 +78,11 @@ def get_schema(db_url: str = None):
         raise HTTPException(status_code=400, detail=f"Failed to inspect schema: {str(e)}")
 
 @router.get("/table-preview/{table_name}")
-def get_table_preview(table_name: str, db_url: str = None, limit: int = 5):
+async def get_table_preview(table_name: str, db_url: str = None, limit: int = 5):
     target_url = get_current_db_url(db_url)
     try:
         introspector = DatabaseIntrospector(target_url)
-        preview = introspector.get_table_preview(table_name, limit=limit)
+        preview = await asyncio.to_thread(introspector.get_table_preview, table_name, limit)
         return preview
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to preview table {table_name}: {str(e)}")
@@ -179,7 +186,7 @@ def generate_dynamic_samples_for_schema(schema: dict) -> list:
 _suggestions_cache = {}
 
 @router.get("/sample-queries")
-def get_sample_queries(
+async def get_sample_queries(
     db_url: str = None, 
     api_key: str = None, 
     provider: str = "gemini", 
@@ -196,12 +203,12 @@ def get_sample_queries(
 
     try:
         introspector = DatabaseIntrospector(target_url)
-        schema = introspector.get_structured_schema(include_samples=False)
+        schema = await asyncio.to_thread(introspector.get_structured_schema, False)
         schema_markdown = introspector.format_schema_as_markdown(schema)
 
         # 1. Attempt LLM-based suggestion generation
         llm = LLMClient(api_key=api_key, provider=provider, model_name=model_name)
-        llm_samples = llm.generate_suggestions(schema_markdown)
+        llm_samples = await asyncio.to_thread(llm.generate_suggestions, schema_markdown)
 
         if llm_samples and isinstance(llm_samples, list) and len(llm_samples) > 0:
             _suggestions_cache[target_url] = llm_samples
@@ -254,14 +261,14 @@ _sample_dictionary = {
 }
 
 @router.get("/dictionary", response_model=DictionaryConfig)
-def get_dictionary():
+async def get_dictionary():
     """
     Returns the active dictionary containing domain glossary definitions and few-shot reference examples.
     """
     return _sample_dictionary
 
 @router.post("/dictionary", response_model=DictionaryConfig)
-def update_dictionary(config: DictionaryConfig):
+async def update_dictionary(config: DictionaryConfig):
     """
     Updates the active domain glossary definitions and few-shot examples.
     """

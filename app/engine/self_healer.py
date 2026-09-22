@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, List, Optional
 from app.engine.introspector import DatabaseIntrospector
 from app.engine.prompt_builder import build_sql_generation_prompt
@@ -180,6 +181,166 @@ class TextToSQLEngine:
                 last_failed_sql = generated_sql
 
         # If all retries failed:
+        return {
+            "success": False,
+            "prompt": user_prompt,
+            "sql": last_failed_sql,
+            "error": f"Failed after {max_self_heal_retries + 1} attempts. Last error: {last_error}",
+            "explanation": current_ai_result.get("explanation") if current_ai_result else None,
+            "breakdown": (current_ai_result.get("breakdown") if current_ai_result else None) or (self._extract_sql_breakdown(last_failed_sql) if last_failed_sql else None),
+            "suggested_chart": "table",
+            "chart_config": {},
+            "data": {"columns": [], "rows": [], "row_count": 0, "execution_time_ms": 0},
+            "self_healed": False,
+            "attempts": attempts_log,
+            "schema_pruning": pruning_meta
+        }
+
+    async def process_natural_language_query_async(
+        self,
+        user_prompt: str,
+        max_self_heal_retries: int = 2,
+        previous_sql: Optional[str] = None,
+        previous_prompt: Optional[str] = None,
+        glossary_terms: Optional[list] = None,
+        few_shot_examples: Optional[list] = None,
+        prune_schema: bool = True,
+        max_tables: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Async version of process_natural_language_query.
+        LLM calls run via async methods; DB operations run in thread pool.
+        """
+        clean_prompt = (user_prompt or "").strip()
+        if not clean_prompt:
+            return {
+                "success": True,
+                "prompt": user_prompt,
+                "sql": None,
+                "explanation": "Please enter a question or query about your database.",
+                "suggested_chart": "table",
+                "chart_config": {},
+                "data": {"columns": [], "rows": [], "row_count": 0, "execution_time_ms": 0},
+                "self_healed": False,
+                "attempts": [],
+                "schema_pruning": {
+                    "is_pruned": False,
+                    "total_tables": 0,
+                    "retained_tables": [],
+                    "pruned_tables": [],
+                    "estimated_tokens_saved": 0
+                }
+            }
+
+        capped_prompt = clean_prompt[:4000]
+
+        # Schema introspection (CPU/IO bound) — run in thread
+        if prune_schema:
+            schema_md, pruning_meta = await asyncio.to_thread(
+                self.introspector.get_pruned_markdown_schema,
+                capped_prompt, previous_prompt, glossary_terms, max_tables
+            )
+        else:
+            schema_md = await asyncio.to_thread(self.get_schema_markdown)
+            structured = await asyncio.to_thread(
+                self.introspector.get_structured_schema, False
+            )
+            table_names = [t["name"] for t in structured.get("tables", [])]
+            pruning_meta = {
+                "is_pruned": False,
+                "total_tables": len(table_names),
+                "retained_tables": table_names,
+                "pruned_tables": [],
+                "estimated_tokens_saved": 0
+            }
+
+        dialect = self.introspector.dialect_name
+        attempts_log: List[Dict[str, Any]] = []
+        last_error: Optional[str] = None
+        last_failed_sql: Optional[str] = None
+        current_ai_result: Optional[Dict[str, Any]] = None
+
+        for attempt in range(max_self_heal_retries + 1):
+            prompt = build_sql_generation_prompt(
+                user_query=capped_prompt,
+                schema_markdown=schema_md,
+                dialect=dialect,
+                previous_error=last_error,
+                previous_failed_sql=last_failed_sql,
+                previous_sql=previous_sql,
+                previous_prompt=previous_prompt,
+                glossary_terms=glossary_terms,
+                few_shot_examples=few_shot_examples
+            )
+
+            # LLM call — async
+            ai_output = await self.llm_client.generate_sql_async(
+                prompt,
+                user_query=user_prompt,
+                previous_sql=previous_sql,
+                glossary_terms=glossary_terms,
+                few_shot_examples=few_shot_examples
+            )
+            current_ai_result = ai_output
+            generated_sql = (ai_output.get("sql") or "").strip()
+
+            if not generated_sql:
+                return {
+                    "success": True,
+                    "prompt": user_prompt,
+                    "sql": None,
+                    "explanation": ai_output.get("explanation", "Please ask a question about your database to generate a SQL query."),
+                    "suggested_chart": "table",
+                    "chart_config": {},
+                    "data": {"columns": [], "rows": [], "row_count": 0, "execution_time_ms": 0},
+                    "self_healed": False,
+                    "attempts": [],
+                    "schema_pruning": pruning_meta
+                }
+
+            # SQL execution — run in thread pool
+            exec_res = await asyncio.to_thread(
+                self.query_runner.execute_query, generated_sql
+            )
+
+            attempts_log.append({
+                "attempt": attempt + 1,
+                "sql": generated_sql,
+                "success": exec_res.get("success", False),
+                "error": exec_res.get("error")
+            })
+
+            if exec_res.get("success"):
+                final_sql = exec_res.get("sanitized_sql", generated_sql)
+                breakdown = ai_output.get("breakdown") or self._extract_sql_breakdown(final_sql)
+                follow_ups = ai_output.get("follow_up_suggestions") or [
+                    {"label": "Only top 3", "prompt": "Only show the top 3"},
+                    {"label": "Sort lowest first", "prompt": "Sort ascending (lowest first)"},
+                    {"label": "Include all columns", "prompt": "Show all columns for these records"},
+                ]
+                return {
+                    "success": True,
+                    "prompt": user_prompt,
+                    "sql": final_sql,
+                    "explanation": ai_output.get("explanation", "Query executed successfully."),
+                    "breakdown": breakdown,
+                    "suggested_chart": ai_output.get("suggested_chart", "table"),
+                    "chart_config": ai_output.get("chart_config", {}),
+                    "follow_up_suggestions": follow_ups,
+                    "data": {
+                        "columns": exec_res.get("columns", []),
+                        "rows": exec_res.get("rows", []),
+                        "row_count": exec_res.get("row_count", 0),
+                        "execution_time_ms": exec_res.get("execution_time_ms", 0)
+                    },
+                    "self_healed": attempt > 0,
+                    "attempts": attempts_log,
+                    "schema_pruning": pruning_meta
+                }
+            else:
+                last_error = exec_res.get("error")
+                last_failed_sql = generated_sql
+
         return {
             "success": False,
             "prompt": user_prompt,

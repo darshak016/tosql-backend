@@ -1,9 +1,11 @@
 import os
 import json
 import re
+import asyncio
 from typing import Dict, Any, Optional
 from app.core.config import settings
 from app.engine.prompt_builder import SYSTEM_INSTRUCTION
+from app.core.llm_cache import llm_cache
 
 class LLMClient:
     def __init__(self, api_key: Optional[str] = None, provider: str = "gemini", model_name: Optional[str] = None):
@@ -17,41 +19,116 @@ class LLMClient:
         user_query: str = "", 
         previous_sql: Optional[str] = None,
         glossary_terms: Optional[list] = None,
-        few_shot_examples: Optional[list] = None
+        few_shot_examples: Optional[list] = None,
+        use_cache: bool = True
     ) -> Dict[str, Any]:
         """
         Sends prompt to configured LLM (Gemini / OpenAI) or falls back to intelligent mock generator.
+        Results are cached to avoid redundant LLM API calls for identical prompts.
         """
+        # Check LLM cache first (skip cache on self-heal retries where previous_sql context makes it unique anyway)
+        if use_cache:
+            cached = llm_cache.get(prompt)
+            if cached is not None:
+                return cached
+
+        result = None
+
         # Try Gemini if API key is provided
         if self.provider == "gemini" and self.api_key:
-            return self._call_gemini(prompt)
-
+            result = self._call_gemini(prompt)
         # Try OpenAI if API key is provided
-        if self.provider == "openai" and self.api_key:
-            return self._call_openai(prompt)
+        elif self.provider == "openai" and self.api_key:
+            result = self._call_openai(prompt)
+        else:
+            # If system environment has GEMINI_API_KEY
+            env_gemini_key = os.environ.get("GEMINI_API_KEY")
+            if env_gemini_key:
+                self.api_key = env_gemini_key
+                self.provider = "gemini"
+                result = self._call_gemini(prompt)
+            else:
+                # If system environment has OPENAI_API_KEY
+                env_openai_key = os.environ.get("OPENAI_API_KEY")
+                if env_openai_key:
+                    self.api_key = env_openai_key
+                    self.provider = "openai"
+                    result = self._call_openai(prompt)
 
-        # If system environment has GEMINI_API_KEY
-        env_gemini_key = os.environ.get("GEMINI_API_KEY")
-        if env_gemini_key:
-            self.api_key = env_gemini_key
-            self.provider = "gemini"
-            return self._call_gemini(prompt)
+        if result is None:
+            # Fallback to local intelligent mock engine for demo database
+            result = self._fallback_demo_generator(
+                user_query or prompt, 
+                prompt=prompt, 
+                previous_sql=previous_sql,
+                glossary_terms=glossary_terms,
+                few_shot_examples=few_shot_examples
+            )
 
-        # If system environment has OPENAI_API_KEY
-        env_openai_key = os.environ.get("OPENAI_API_KEY")
-        if env_openai_key:
-            self.api_key = env_openai_key
-            self.provider = "openai"
-            return self._call_openai(prompt)
+        # Cache successful LLM results (only if SQL was generated)
+        if use_cache and result and result.get("sql"):
+            llm_cache.set(prompt, result)
 
-        # Fallback to local intelligent mock engine for demo database
-        return self._fallback_demo_generator(
-            user_query or prompt, 
-            prompt=prompt, 
-            previous_sql=previous_sql,
-            glossary_terms=glossary_terms,
-            few_shot_examples=few_shot_examples
-        )
+        return result
+
+    async def generate_sql_async(
+        self,
+        prompt: str,
+        user_query: str = "",
+        previous_sql: Optional[str] = None,
+        glossary_terms: Optional[list] = None,
+        few_shot_examples: Optional[list] = None,
+        use_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Async version of generate_sql. Runs LLM calls in a thread to avoid blocking
+        the FastAPI event loop.
+        """
+        # Cache check is fast, do it synchronously
+        if use_cache:
+            cached = llm_cache.get(prompt)
+            if cached is not None:
+                return cached
+
+        result = None
+
+        # Determine which provider to use
+        provider = self.provider
+        api_key = self.api_key
+
+        if not api_key:
+            env_gemini_key = os.environ.get("GEMINI_API_KEY")
+            env_openai_key = os.environ.get("OPENAI_API_KEY")
+            if env_gemini_key:
+                api_key = env_gemini_key
+                provider = "gemini"
+            elif env_openai_key:
+                api_key = env_openai_key
+                provider = "openai"
+
+        if provider == "gemini" and api_key:
+            self.api_key = api_key
+            self.provider = provider
+            result = await asyncio.to_thread(self._call_gemini, prompt)
+        elif provider == "openai" and api_key:
+            self.api_key = api_key
+            self.provider = provider
+            result = await asyncio.to_thread(self._call_openai, prompt)
+
+        if result is None:
+            result = await asyncio.to_thread(
+                self._fallback_demo_generator,
+                user_query or prompt,
+                prompt,
+                previous_sql,
+                glossary_terms,
+                few_shot_examples
+            )
+
+        if use_cache and result and result.get("sql"):
+            llm_cache.set(prompt, result)
+
+        return result
 
     def generate_suggestions(self, schema_markdown: str) -> Optional[list]:
         """
